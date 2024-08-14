@@ -6,14 +6,14 @@
 ;;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 {:deps  {org.bdinetwork/ishare-jwt {:git/url "https://github.com/Basic-Data-Infrastructure/clj-ishare-jwt.git"
-                                    :git/sha "3b22e4f7a89ef9a8e520283a57db49153a9ba8c7"}
+                                    :git/sha "977bb1f393a22d964819a0caf627b3d2840de086"}
          org.babashka/http-client  {:mvn/version "0.4.20"}
          org.babashka/json         {:mvn/version "0.1.6"}}
  :paths ["src" "test"]
 
  :aliases
  {:test     {:extra-deps {lambdaisland/kaocha    {:mvn/version "RELEASE"}
-                          org.clojure/core.async {:mvn/version "1.6.673"}}
+                          org.clojure/core.async {:mvn/version "1.6.681"}}
              :main-opts  ["-m" "kaocha.runner"]}
   :lint     {:extra-deps {clj-kondo/clj-kondo {:mvn/version "RELEASE"}}
              :main-opts  ["-m" "clj-kondo.main" "--lint" "src" "test"]}
