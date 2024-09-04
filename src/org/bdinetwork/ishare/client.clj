@@ -275,6 +275,7 @@ When bearer token is not needed, provide a `nil` token"
 (defmethod ishare->http-request :trusted-list
   [request]
   (-> request
+      (satellite-request)
       (assoc :method       :get
              :path         "trusted_list"
              :as           :json
