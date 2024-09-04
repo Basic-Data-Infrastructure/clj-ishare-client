@@ -229,10 +229,10 @@ When bearer token is not needed, provide a `nil` token"
 
 
 (defmethod ishare->http-request :access-token
-  [{:ishare/keys [client-id] :as request}]
+  [{:ishare/keys [client-id path] :as request}]
   {:pre [client-id]}
   (assoc request
-         :path          "connect/token"
+         :path          (or path "connect/token")
          :method       :post
          :as           :json
          :ishare/bearer-token nil
