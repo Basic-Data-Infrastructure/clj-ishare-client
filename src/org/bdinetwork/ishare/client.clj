@@ -134,6 +134,36 @@ When bearer token is not needed, provide a `nil` token"
                  (swap! log-interceptor-atom conj r))
                r)})
 
+(defn redact-path
+  [r p]
+  (if (get-in r p)
+    (assoc-in r p "REDACTED")
+    r))
+
+(defn redact-request
+  [request]
+  (-> request
+      (redact-path [:ishare/private-key])
+      (redact-path [:ishare/x5c])
+      (dissoc :interceptors)
+      (redact-path [:form-params "client_assertion"])
+      (update :headers redact-path ["authorization"])
+      (dissoc :client)))
+
+(def unexceptional-statuses
+  #{200 201 202 203 204 205 206 207 300 301 302 303 304 307})
+
+(def throw-on-exceptional-status-code
+  "Response: throw on exceptional status codes. Strips out client info and private information"
+  {:name ::throw-on-exceptional-status-code
+   :response (fn [resp]
+               (if-let [status (:status resp)]
+                 (if (or (false? (some-> resp :request :throw))
+                         (contains? unexceptional-statuses status))
+                   resp
+                   (throw (ex-info (str "Exceptional status code: " status) (update resp :request redact-request))))
+                 resp))})
+
 (defn resolve-uri [endpoint path]
   (let [endpoint (if (string/ends-with? endpoint "/")
                    endpoint
@@ -194,7 +224,7 @@ When bearer token is not needed, provide a `nil` token"
 (def interceptors
   [ishare-interpreter-interactor
    fetch-issuer-ar-interceptor
-   interceptors/throw-on-exceptional-status-code
+   throw-on-exceptional-status-code
    log-interceptor
    lens-interceptor
    unsign-token-interceptor
