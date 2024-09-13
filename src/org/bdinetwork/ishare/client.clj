@@ -11,7 +11,8 @@
             [babashka.json :as json]
             [buddy.core.keys :as keys]
             [clojure.string :as string]
-            [org.bdinetwork.ishare.jwt :as jwt])
+            [org.bdinetwork.ishare.jwt :as jwt]
+            [clojure.tools.logging.readable :as log])
   (:import (java.net URI)))
 
 (defn private-key
@@ -134,6 +135,14 @@ When bearer token is not needed, provide a `nil` token"
                  (swap! log-interceptor-atom conj r))
                r)})
 
+(def logging-interceptor
+  {:name     ::logging-interceptor
+   :response (fn [{:keys [request] :as response}]
+               (log/debug {:request  (select-keys request [:method :uri])
+                           :response (select-keys response [:status])})
+               response)})
+
+
 (defn redact-path
   [r p]
   (if (get-in r p)
@@ -234,6 +243,7 @@ When bearer token is not needed, provide a `nil` token"
    fetch-issuer-ar-interceptor
    throw-on-exceptional-status-code
    log-interceptor
+   logging-interceptor
    lens-interceptor
    unsign-token-interceptor
    build-uri-interceptor
