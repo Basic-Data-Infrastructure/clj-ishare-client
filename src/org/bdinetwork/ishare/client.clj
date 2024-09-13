@@ -140,6 +140,13 @@ When bearer token is not needed, provide a `nil` token"
     (assoc-in r p "REDACTED")
     r))
 
+(defn redact-body
+  "Remove sensitive params from request body (for logging)"
+  [body]
+  (if (string? body)
+    (string/replace body #"(client_assertion=)[^&]+" "$1REDACTED")
+    body))
+
 (defn redact-request
   [request]
   (-> request
@@ -148,6 +155,7 @@ When bearer token is not needed, provide a `nil` token"
       (dissoc :interceptors)
       (redact-path [:form-params "client_assertion"])
       (update :headers redact-path ["authorization"])
+      (update :body redact-body)
       (dissoc :client)))
 
 (def unexceptional-statuses
