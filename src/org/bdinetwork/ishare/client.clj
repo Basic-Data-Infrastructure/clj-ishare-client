@@ -136,8 +136,8 @@ When bearer token is not needed, provide a `nil` token"
                r)})
 
 (def logging-interceptor
-  {:name     ::logging-interceptor
-   :response (fn [{:keys [request] :as response}]
+  {:name     ::logging
+   :response (fn logging-response [{:keys [request] :as response}]
                (log/debug {:request  (select-keys request [:method :uri])
                            :response (select-keys response [:status])})
                response)})
@@ -192,8 +192,8 @@ When bearer token is not needed, provide a `nil` token"
         (str))))
 
 (def build-uri-interceptor
-  {:name ::build-uri-interceptor
-   :request (fn build-uri-interceptor-request [{:keys [path ishare/endpoint] :as request}]
+  {:name ::build-uri
+   :request (fn build-uri-request [{:keys [path ishare/endpoint] :as request}]
               (if (and path endpoint)
                 (assoc request :uri (resolve-uri endpoint path))
                 request))})
