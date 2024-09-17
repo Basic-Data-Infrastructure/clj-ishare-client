@@ -261,11 +261,24 @@ When bearer token is not needed, provide a `nil` token"
 
 (def ^:dynamic http-client nil)
 
+(def timeout-ms 10000)
+
+(def http-client-opts
+  {:follow-redirects :normal
+   :connect-timeout  timeout-ms
+   :request          {:headers {:accept          "*/*"
+                                :accept-encoding ["gzip" "deflate"]
+                                :user-agent      "clj-ishare-client"}}})
+
+(def default-http-client
+  (delay (http/client http-client-opts)))
+
 (defn exec
   [request]
   (http/request (assoc request
-                       :client http-client
-                       :interceptors interceptors)))
+                       :client (or http-client @default-http-client)
+                       :interceptors interceptors
+                       :timeout timeout-ms)))
 
 (defn satellite-request
   [{:ishare/keys [satellite-endpoint satellite-id] :as request}]
