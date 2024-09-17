@@ -7,7 +7,7 @@
 
 {:deps  {org.bdinetwork/ishare-jwt {:git/url "https://github.com/Basic-Data-Infrastructure/clj-ishare-jwt.git"
                                     :git/sha "f7590e16c50e2a274c9307bd3be21ef179f9dce5"}
-         org.babashka/http-client  {:mvn/version "0.4.20"}
+         org.babashka/http-client  {:mvn/version "0.4.21"}
          org.babashka/json         {:mvn/version "0.1.6"}}
  :paths ["src" "test"]
 
