@@ -43,7 +43,7 @@
   {:name     ::unsign-token
    :description
    "A request with `:ishare/unsign prop` will unsign the jwt under `prop` in response body"
-   :response (fn [response]
+   :response (fn unsign-token-response [response]
                (let [k (get-in response [:request :ishare/unsign-token])]
                  (if (and k (get-in response [:body k]))
                    (update-in response [:body k] jwt/unsign-token)
@@ -64,7 +64,7 @@
     \"application/json\" content-type header is added and the
     json-params will be serialized as JSON and used as the request
     body."
-   :request  (fn [{:keys [as json-params] :as request}]
+   :request  (fn json-request [{:keys [as json-params] :as request}]
                (cond-> request
                  (= :json as)
                  (-> (assoc-in [:headers :accept] "application/json")
@@ -75,7 +75,7 @@
                  (contains? request :json-params) ;; use contains? to support `:json-params nil`
                  (-> (assoc-in [:headers "content-type"] "application/json")
                      (assoc :body (json/write-str json-params)))))
-   :response (fn [response]
+   :response (fn json-response [response]
                (if (and (get-in response [:request ::json])
                         (json-response? response))
                  (update response :body #(json/read-str % {:key-fn identity}))
@@ -86,7 +86,7 @@
    :description
    "A request with a non-nil `:ishare/bearer-token` will get an Authorization
    header for the bearer token added."
-   :request  (fn [{:ishare/keys [bearer-token] :as request}]
+   :request  (fn bearer-token-request [{:ishare/keys [bearer-token] :as request}]
                (if bearer-token
                  (assoc-in request [:headers "Authorization"] (str "Bearer " bearer-token))
                  request))})
@@ -97,7 +97,7 @@
   {:name    ::fetch-bearer-token
    :doc     "When request has no :ishare/bearer-token, fetch it from the endpoint.
 When bearer token is not needed, provide a `nil` token"
-   :request (fn [request]
+   :request (fn fetch-bearer-token-request [request]
               (if (contains? request :ishare/bearer-token)
                 request
                 (let [response (-> request
@@ -120,7 +120,7 @@ When bearer token is not needed, provide a `nil` token"
    :description
    "If request contains :ishare/lens path, put the object at path in
    reponse, under :ishare/result"
-   :response (fn [response]
+   :response (fn lens-response [response]
                (if-let [path (get-in response [:request :ishare/lens])]
                  (assoc response :ishare/result (get-in response path))
                  response))})
@@ -129,7 +129,7 @@ When bearer token is not needed, provide a `nil` token"
 
 (def log-interceptor
   {:name     ::log
-   :response (fn [r]
+   :response (fn log-response [r]
                (when log-interceptor-atom
                  (swap! log-interceptor-atom conj r))
                r)})
@@ -156,7 +156,7 @@ When bearer token is not needed, provide a `nil` token"
 (def throw-on-exceptional-status-code
   "Response: throw on exceptional status codes. Strips out client info and private information"
   {:name ::throw-on-exceptional-status-code
-   :response (fn [resp]
+   :response (fn throw-on-exceptional-status-code-response [resp]
                (if-let [status (:status resp)]
                  (if (or (false? (some-> resp :request :throw))
                          (contains? unexceptional-statuses status))
@@ -176,7 +176,7 @@ When bearer token is not needed, provide a `nil` token"
 
 (def build-uri-interceptor
   {:name ::build-uri-interceptor
-   :request (fn [{:keys [path ishare/endpoint] :as request}]
+   :request (fn build-uri-interceptor-request [{:keys [path ishare/endpoint] :as request}]
               (if (and path endpoint)
                 (assoc request :uri (resolve-uri endpoint path))
                 request))})
