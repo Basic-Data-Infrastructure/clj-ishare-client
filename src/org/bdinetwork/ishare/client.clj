@@ -436,6 +436,8 @@ When bearer token is not needed, provide a `nil` token"
                              key-file chain-file
                              ar-id ar-endpoint ar-type
                              satellite-id satellite-endpoint]}]
+  {:pre [eori dataspace-id key-file chain-file
+         satellite-id satellite-endpoint]}
   {:ishare/client-id                        eori
    :ishare/dataspace-id                     dataspace-id
    :ishare/satellite-id                     satellite-id
