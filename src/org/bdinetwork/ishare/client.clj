@@ -200,6 +200,32 @@ When bearer token is not needed, provide a `nil` token"
 
 
 
+;; This is a workaround
+;;
+;; The current (as of 2024-10-02) iSHARE satellite implementations
+;; return out-of-spec information about a party's authorization
+;; registries.
+;;
+;; According to the v2.0 specification, this information should be
+;; provided as a collection under the `auth_registries` key -- see the
+;; #/components/schemas/Party entry in iSHARE scheme 2.0 --
+;; https://app.swaggerhub.com/apis/iSHARE/iSHARE_Scheme_Specification/2.0#/Party
+;; but the satellite actually returns this information in a different
+;; form under the `authregistery` key, which is undocumented.
+
+(defn- party-info->auth-registry
+  "Workaround `:auth_registries` data is provided as `:authregistery` in current ishare satellite."
+  [{:keys [auth_registries authregistery] :as _party_info}]
+  (or auth_registries
+      (map (fn upgrade-authregistery
+             [{:keys [dataspaceID authorizationRegistryName
+                      authorizationRegistryID authorizationRegistryUrl]}]
+             {:dataspace_id dataspaceID
+              :id           authorizationRegistryID
+              :name         authorizationRegistryName
+              :url          authorizationRegistryUrl})
+           authregistery)))
+
 (defn- fetch-issuer-ar
   "If request contains policy-issuer and no server-id + endpoint, set
   server-id and endpoint to issuer's authorization registry for dataspace."
@@ -208,22 +234,23 @@ When bearer token is not needed, provide a `nil` token"
   (if (or (not (and policy-issuer dataspace-id))
           (and server-id endpoint))
     request
-    (let [{:keys [authorizationRegistryName
-                  authorizationRegistryID
-                  authorizationRegistryUrl]}
-          (->> (-> request
-                   (assoc :ishare/message-type :party
-                          :ishare/party-id policy-issuer)
-                   exec
-                   :ishare/result
-                   :party_info
-                   :authregistery)
-               (filter #(= dataspace-id (:dataspaceID %)))
-               first)]
+    (if-let [{:keys [name id url]}
+             (->> (assoc request
+                         :ishare/message-type :party
+                         :ishare/party-id policy-issuer)
+                  exec
+                  :ishare/result
+                  :party_info
+                  (party-info->auth-registry)
+                  (filter #(= dataspace-id (:dataspace_id %)))
+                  first)]
       (assoc request
-             :ishare/server-id authorizationRegistryID
-             :ishare/server-name authorizationRegistryName
-             :ishare/endpoint authorizationRegistryUrl))))
+             :ishare/server-id id
+             :ishare/server-name name
+             :ishare/endpoint url)
+      (throw (ex-info (str "Can't find authorization register for " policy-issuer)
+                      {:dataspace-id dataspace-id
+                       :policy-issuer policy-issuer})))))
 
 (def fetch-issuer-ar-interceptor
   {:name    ::fetch-issuer-ar
@@ -366,6 +393,8 @@ When bearer token is not needed, provide a `nil` token"
 
 
 
+;; TODO: misspelled; should be authorization-registry-id
+
 (defn own-ar-request
   "If request has no ishare/endpoint and ishare/server-id,
   set endpoint and server-id from ishare/authentication-registry-id
@@ -420,6 +449,8 @@ When bearer token is not needed, provide a `nil` token"
                              key-file chain-file
                              ar-id ar-endpoint ar-type
                              satellite-id satellite-endpoint]}]
+  {:pre [eori dataspace-id key-file chain-file
+         satellite-id satellite-endpoint]}
   {:ishare/client-id                        eori
    :ishare/dataspace-id                     dataspace-id
    :ishare/satellite-id                     satellite-id
