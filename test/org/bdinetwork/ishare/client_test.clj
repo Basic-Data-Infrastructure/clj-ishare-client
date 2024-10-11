@@ -45,7 +45,7 @@
    :ishare/x5c                client-x5c
    :ishare/dataspace-id       dataspace-id
    :ishare/satellite-id       aa-eori
-   :ishare/satellite-endpoint aa-url})
+   :ishare/satellite-base-url aa-url})
 
 (defn test-get-token [c token]
   (testing "getting an access token"

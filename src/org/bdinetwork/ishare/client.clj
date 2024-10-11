@@ -102,7 +102,7 @@ When bearer token is not needed, provide a `nil` token"
               (if (contains? request :ishare/bearer-token)
                 request
                 (let [response (-> request
-                                   (select-keys [:ishare/endpoint
+                                   (select-keys [:ishare/base-url
                                                  :ishare/client-id
                                                  :ishare/server-id
                                                  :ishare/x5c
@@ -181,11 +181,11 @@ When bearer token is not needed, provide a `nil` token"
                    (throw (ex-info (str "Exceptional status code: " status) (update resp :request redact-request))))
                  resp))})
 
-(defn resolve-uri [endpoint path]
-  (let [endpoint (if (string/ends-with? endpoint "/")
-                   endpoint
-                   (str endpoint "/"))]
-    (-> endpoint
+(defn resolve-uri [base-url path]
+  (let [base-url (if  (string/ends-with? base-url "/")
+                   base-url
+                   (str base-url "/"))]
+    (-> base-url
         (URI.)
         (.resolve (URI. path))
         (.normalize)
@@ -193,9 +193,9 @@ When bearer token is not needed, provide a `nil` token"
 
 (def build-uri-interceptor
   {:name ::build-uri
-   :request (fn build-uri-request [{:keys [path ishare/endpoint] :as request}]
-              (if (and path endpoint)
-                (assoc request :uri (resolve-uri endpoint path))
+   :request (fn build-uri-request [{:keys [path ishare/base-url] :as request}]
+              (if (and path base-url)
+                (assoc request :uri (resolve-uri base-url path))
                 request))})
 
 
@@ -227,12 +227,12 @@ When bearer token is not needed, provide a `nil` token"
            authregistery)))
 
 (defn- fetch-issuer-ar
-  "If request contains policy-issuer and no server-id + endpoint, set
-  server-id and endpoint to issuer's authorization registry for dataspace."
-  [{:ishare/keys [policy-issuer dataspace-id server-id endpoint]
+  "If request contains policy-issuer and no server-id + base-url, set
+  server-id and base-url to issuer's authorization registry for dataspace."
+  [{:ishare/keys [policy-issuer dataspace-id server-id base-url]
     :as          request}]
   (if (or (not (and policy-issuer dataspace-id))
-          (and server-id endpoint))
+          (and server-id base-url))
     request
     (if-let [{:keys [name id url]}
              (->> (assoc request
@@ -247,7 +247,7 @@ When bearer token is not needed, provide a `nil` token"
       (assoc request
              :ishare/server-id id
              :ishare/server-name name
-             :ishare/endpoint url)
+             :ishare/base-url url)
       (throw (ex-info (str "Can't find authorization register for " policy-issuer)
                       {:dataspace-id dataspace-id
                        :policy-issuer policy-issuer})))))
@@ -308,10 +308,10 @@ When bearer token is not needed, provide a `nil` token"
                        :timeout timeout-ms)))
 
 (defn satellite-request
-  [{:ishare/keys [satellite-endpoint satellite-id] :as request}]
-  {:pre [satellite-endpoint satellite-id]}
+  [{:ishare/keys [satellite-base-url satellite-id] :as request}]
+  {:pre [satellite-base-url satellite-id]}
   (assoc request
-         :ishare/endpoint    satellite-endpoint
+         :ishare/base-url    satellite-base-url
          :ishare/server-id   satellite-id))
 
 
@@ -396,18 +396,18 @@ When bearer token is not needed, provide a `nil` token"
 ;; TODO: misspelled; should be authorization-registry-id
 
 (defn own-ar-request
-  "If request has no ishare/endpoint and ishare/server-id,
-  set endpoint and server-id from ishare/authentication-registry-id
-  and ishare/authentication-registry-endpoint"
+  "If request has no ishare/base-url and ishare/server-id,
+  set base-url and server-id from ishare/authentication-registry-id
+  and ishare/authentication-registry-base-url"
   [{:ishare/keys [authentication-registry-id
-                  authentication-registry-endpoint
-                  endpoint
+                  authentication-registry-base-url
+                  base-url
                   server-id]
     :as          request}]
-  (if (and endpoint server-id)
+  (if (and base-url server-id)
     request
     (assoc request
-           :ishare/endpoint  authentication-registry-endpoint
+           :ishare/base-url  authentication-registry-base-url
            :ishare/server-id authentication-registry-id)))
 
 (defmethod ishare->http-request :ishare/policy ;; ishare AR specific
@@ -447,16 +447,16 @@ When bearer token is not needed, provide a `nil` token"
 (defn ->client-data [{:keys [eori
                              dataspace-id
                              key-file chain-file
-                             ar-id ar-endpoint ar-type
-                             satellite-id satellite-endpoint]}]
+                             ar-id ar-base-url ar-type
+                             satellite-id satellite-base-url]}]
   {:pre [eori dataspace-id key-file chain-file
-         satellite-id satellite-endpoint]}
+         satellite-id satellite-base-url]}
   {:ishare/client-id                        eori
    :ishare/dataspace-id                     dataspace-id
    :ishare/satellite-id                     satellite-id
-   :ishare/satellite-endpoint               satellite-endpoint
+   :ishare/satellite-base-url               satellite-base-url
    :ishare/authentication-registry-id       ar-id
-   :ishare/authentication-registry-endpoint ar-endpoint
+   :ishare/authentication-registry-base-url ar-base-url
    :ishare/authentication-registry-type     (keyword ar-type)
    :ishare/private-key                      (private-key key-file)
    :ishare/x5c                              (x5c chain-file)})
@@ -481,14 +481,14 @@ When bearer token is not needed, provide a `nil` token"
      :ishare/private-key (private-key "credentials/EU.EORI.NLFLEXTRANS.pem")})
 
   (def ishare-ar-request
-    {:ishare/endpoint    "https://ar.isharetest.net/"
+    {:ishare/base-url    "https://ar.isharetest.net/"
      :ishare/server-id   "EU.EORI.NL000000004"
      :ishare/client-id   "EU.EORI.NLSMARTPHON"
      :ishare/x5c         (x5c "credentials/EU.EORI.NLSMARTPHON.crt")
      :ishare/private-key (private-key "credentials/EU.EORI.NLSMARTPHON.pem")})
 
   (def poort8-ar-request
-    {:ishare/endpoint    "https://tsl-ishare-dataspace-coremanager-preview.azurewebsites.net/api/ishare/"
+    {:ishare/base-url    "https://tsl-ishare-dataspace-coremanager-preview.azurewebsites.net/api/ishare/"
      :ishare/server-id   "EU.EORI.NLP8TSLAR1"
      :ishare/client-id   "EU.EORI.NLPRECIOUSG"
      :ishare/x5c         (x5c "credentials/EU.EORI.NLPRECIOUSG.crt")
@@ -529,7 +529,7 @@ When bearer token is not needed, provide a `nil` token"
 
   (-> client-data
       (assoc :ishare/satellite-id (System/getenv "SATELLITE_ID"))
-      (assoc :ishare/satellite-endpoint (System/getenv "SATELLITE_ENDPOINT"))
+      (assoc :ishare/satellite-base-url (System/getenv "SATELLITE_ENDPOINT"))
       (satellite-request)
       (assoc :ishare/message-type :access-token)
       exec
