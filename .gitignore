@@ -10,3 +10,5 @@
 *.pem
 /ishare-jwt/target/
 /target/
+/.clj-kondo/
+/.lsp/
