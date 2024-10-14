@@ -397,18 +397,18 @@ When bearer token is not needed, provide a `nil` token"
 
 (defn own-ar-request
   "If request has no ishare/base-url and ishare/server-id,
-  set base-url and server-id from ishare/authentication-registry-id
-  and ishare/authentication-registry-base-url"
-  [{:ishare/keys [authentication-registry-id
-                  authentication-registry-base-url
+  set base-url and server-id from ishare/authorization-registry-id
+  and ishare/authorization-registry-base-url"
+  [{:ishare/keys [authorization-registry-id
+                  authorization-registry-base-url
                   base-url
                   server-id]
     :as          request}]
   (if (and base-url server-id)
     request
     (assoc request
-           :ishare/base-url  authentication-registry-base-url
-           :ishare/server-id authentication-registry-id)))
+           :ishare/base-url  authorization-registry-base-url
+           :ishare/server-id authorization-registry-id)))
 
 (defmethod ishare->http-request :ishare/policy ;; ishare AR specific
   [{delegation-evidence :ishare/params :as request}]
@@ -451,15 +451,15 @@ When bearer token is not needed, provide a `nil` token"
                              satellite-id satellite-base-url]}]
   {:pre [eori dataspace-id key-file chain-file
          satellite-id satellite-base-url]}
-  {:ishare/client-id                        eori
-   :ishare/dataspace-id                     dataspace-id
-   :ishare/satellite-id                     satellite-id
-   :ishare/satellite-base-url               satellite-base-url
-   :ishare/authentication-registry-id       ar-id
-   :ishare/authentication-registry-base-url ar-base-url
-   :ishare/authentication-registry-type     (keyword ar-type)
-   :ishare/private-key                      (private-key key-file)
-   :ishare/x5c                              (x5c chain-file)})
+  {:ishare/client-id                       eori
+   :ishare/dataspace-id                    dataspace-id
+   :ishare/satellite-id                    satellite-id
+   :ishare/satellite-base-url              satellite-base-url
+   :ishare/authorization-registry-id      ar-id
+   :ishare/authorization-registry-base-url ar-base-url
+   :ishare/authorization-registry-type     (keyword ar-type)
+   :ishare/private-key                     (private-key key-file)
+   :ishare/x5c                             (x5c chain-file)})
 
 (defn wrap-client-data
   [app config]
