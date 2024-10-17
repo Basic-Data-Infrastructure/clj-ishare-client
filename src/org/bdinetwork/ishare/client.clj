@@ -227,17 +227,24 @@ When bearer token is not needed, provide a `nil` token"
            authregistery)))
 
 (defn- fetch-issuer-ar
-  "If request contains policy-issuer and no server-id + base-url, set
-  server-id and base-url to issuer's authorization registry for dataspace."
+  "If request contains `policy-issuer` and no `server-id` + `base-url`,
+  set `server-id` and `base-url` to issuer's authorization registry
+  for dataspace."
   [{:ishare/keys [policy-issuer dataspace-id server-id base-url]
     :as          request}]
   (if (or (not (and policy-issuer dataspace-id))
           (and server-id base-url))
     request
     (if-let [{:keys [name id url]}
-             (->> (assoc request
-                         :ishare/message-type :party
-                         :ishare/party-id policy-issuer)
+             (->> (-> request
+                      ;; select only necessary from original request.
+                      (select-keys [:ishare/x5c
+                                    :ishare/private-key
+                                    :ishare/client-id
+                                    :ishare/satellite-id
+                                    :ishare/satellite-base-url])
+                      (assoc :ishare/message-type :party
+                             :ishare/party-id policy-issuer))
                   exec
                   :ishare/result
                   :party_info
