@@ -12,7 +12,8 @@
             [buddy.core.keys :as keys]
             [clojure.string :as string]
             [org.bdinetwork.ishare.jwt :as jwt]
-            [clojure.tools.logging.readable :as log])
+            [clojure.tools.logging.readable :as log]
+            [clojure.core.memoize :as memoize])
   (:import (java.net URI)))
 
 (defn private-key
@@ -249,19 +250,20 @@ When bearer token is not needed, provide a `nil` token"
               (if (contains? request :ishare/bearer-token)
                 request
                 (let [response (-> request
-                                   (select-keys [:ishare/base-url
-                                                 :ishare/client-id
-                                                 :ishare/server-id
-                                                 :ishare/x5c
-                                                 :ishare/private-key])
+                                   (select-keys  [:ishare/x5c
+                                                  :ishare/private-key
+                                                  :ishare/client-id
+                                                  :ishare/server-id
+                                                  :ishare/base-url
+                                                  :ishare/satellite-id
+                                                  :ishare/satellite-base-url])
                                    (access-token-request)
                                    exec)
-                      token (:ishare/result response)]
+                      token    (:ishare/result response)]
                   (when-not token
                     ;; FEEDBACK: bij invalid client op /token komt 202 status terug?
                     (throw (ex-info "Error fetching access token" {:response response})))
-                  (assoc request
-                         :ishare/bearer-token token))))})
+                  (assoc request                         :ishare/bearer-token token))))})
 
 (def lens-interceptor
   {:name     ::lens
@@ -373,6 +375,127 @@ When bearer token is not needed, provide a `nil` token"
               :url          authorizationRegistryUrl})
            authregistery)))
 
+(def instant-formatter
+  java.time.format.DateTimeFormatter/ISO_ZONED_DATE_TIME)
+
+(defn parse-instant
+  [s]
+  {:pre [s]}
+  (-> (java.time.ZonedDateTime/parse s instant-formatter)
+      (.toInstant)))
+
+(defn party-adherence-issue
+  "If party info is not currently adherent, returns an issue map
+  of :issue message and :info data."
+  [{{:keys [status start_date end_date]} :adherence
+    :keys                                [party_id] :as party-info}]
+  {:pre [party-info]}
+  (let [now (java.time.Instant/now)]
+    (cond
+      (not= "Active" status)
+      {:issue "Server party not active"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not start_date)
+      {:issue "No start_date"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not end_date)
+      {:issue "No end_date"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not (.isBefore (parse-instant start_date) now))
+      {:issue "Server party not yet active"
+       :info  {:status     status
+               :party_id   party_id
+               :now        now
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not (.isBefore  now (parse-instant end_date)))
+      {:issue "Server party not yet active"
+       :info  {:status     status
+               :party_id   party_id
+               :now        now
+               :start_date start_date
+               :end_date   end_date}})))
+
+(defn- fetch-party-info-uncached
+
+  [request party-id]
+  (-> request
+      (select-keys [:ishare/x5c
+                    :ishare/private-key
+                    :ishare/client-id
+                    :ishare/satellite-id
+                    :ishare/satellite-base-url])
+      (party-request party-id)
+      exec
+      :ishare/result
+      :party_info))
+
+(defn mk-party-info-cached
+  [ttl-ms]
+  (memoize/ttl (with-meta fetch-party-info-uncached
+                  ;; ignore irrelevant data in request when caching
+                 {::memoize/args-fn (fn [[req party-id]]
+                                      (prn [:args-fn (select-keys req [
+                                                         :ishare/client-id
+                                                         :ishare/satellite-id
+                                                         :ishare/satellite-base-url])])
+                                      [(select-keys req [:ishare/x5c
+                                                         :ishare/private-key
+                                                         :ishare/client-id
+                                                         :ishare/satellite-id
+                                                         :ishare/satellite-base-url])
+                                       party-id])})
+               {}
+               :ttl/threshold ttl-ms))
+
+(def ^:dynamic *party-info-fn*
+  (mk-party-info-cached 3600000))
+
+(defn fetch-party-info
+  [request party-id]
+  (*party-info-fn* request party-id))
+
+(defn- check-server-adherence
+  "Fetch party for `:ishare/server-id` and raise an exception if the
+  party is not (yet) adherent.
+
+  Will always assume the server with `server-id` equal to
+  `satellite-id` is adherent."
+  [{:ishare/keys [server-id satellite-id]
+    :as          request}]
+  {:pre [satellite-id server-id]}
+  (when-not (= satellite-id server-id)
+    (if-let [party-info (fetch-party-info request server-id)]
+      (when-let [{:keys [issue info]} (party-adherence-issue party-info)]
+        (throw (ex-info issue info)))
+      (throw (ex-info "Party was not found" {:server-id    server-id
+                                             :satellite-id satellite-id})))))
+
+(def ishare-server-adherence-interceptor
+  {:name ::ishare-server-status-interceptor
+   :doc "Before accessing a server, check that it is still adherent.
+
+   If request has a `false` value for
+   `:ishare/check-server-adherence?`, this check will be skipped."
+   :request (fn [{:ishare/keys [check-server-adherence?] :as request}]
+              (when-not (false? check-server-adherence?)
+                (check-server-adherence request))
+              (assoc request
+                     :ishare/check-server-adherence? false))})
+
 (defn- fetch-issuer-ar
   "If request contains `policy-issuer` and no `server-id` + `base-url`,
   set `server-id` and `base-url` to issuer's authorization registry
@@ -383,18 +506,7 @@ When bearer token is not needed, provide a `nil` token"
           (and server-id base-url))
     request
     (if-let [{:keys [name id url]}
-             (->> (-> request
-                      ;; select only necessary from original request.
-                      (select-keys [:ishare/x5c
-                                    :ishare/private-key
-                                    :ishare/client-id
-                                    :ishare/satellite-id
-                                    :ishare/satellite-base-url])
-                      (assoc :ishare/message-type :party
-                             :ishare/party-id policy-issuer))
-                  exec
-                  :ishare/result
-                  :party_info
+             (->> (fetch-party-info request policy-issuer)
                   (party-info->auth-registry)
                   (filter #(= dataspace-id (:dataspace_id %)))
                   first)]
@@ -418,6 +530,7 @@ When bearer token is not needed, provide a `nil` token"
 (def interceptors
   [ishare-interpreter-interceptor
    fetch-issuer-ar-interceptor
+   ishare-server-adherence-interceptor
    throw-on-exceptional-status-code
    log-interceptor
    logging-interceptor
@@ -435,7 +548,6 @@ When bearer token is not needed, provide a `nil` token"
    ;; error messages are decoded
    interceptors/decode-body
    interceptors/decompress-body])
-
 
 
 
@@ -463,10 +575,6 @@ When bearer token is not needed, provide a `nil` token"
                        :timeout timeout-ms)))
 
 
-
-
-
-
 
 (comment
   (def client-data
