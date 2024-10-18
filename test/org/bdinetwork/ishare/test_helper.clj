@@ -24,7 +24,7 @@
   "Run ishare client exec asynchronously returning a channel and a result future.
 
   The returns channel is bi-directional it delivers ring like request
-  map and expects ring like response maps."
+  map and expects ring like response map."
   [req]
   (let [c (async/chan)]
     [c (binding [ishare-client/http-client (build-client c)]

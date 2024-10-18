@@ -40,6 +40,157 @@
            (string/split #"(?s)\s*-+END CERTIFICATE-+.*?-+BEGIN CERTIFICATE-+\s*"))
        (mapv #(string/replace % #"\s+" ""))))
 
+
+
+
+;; named request functions
+
+(defn satellite-request
+  [{:ishare/keys [satellite-base-url satellite-id] :as request}]
+  {:pre [satellite-base-url satellite-id]}
+  (assoc request
+         :ishare/base-url    satellite-base-url
+         :ishare/server-id   satellite-id))
+
+(defn access-token-request
+  ([{:ishare/keys [client-id base-url server-id] :as request} path]
+   {:pre [client-id base-url server-id]}
+   (assoc request
+          :path          (or path "connect/token")
+          :method       :post
+          :as           :json
+          :ishare/bearer-token nil
+          :form-params  {"client_id"             client-id
+                         "grant_type"            "client_credentials"
+                         "scope"                 "iSHARE" ;; TODO: allow restricting scope?
+                         "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                         "client_assertion"      (jwt/make-client-assertion request)}
+          ;; NOTE: body includes expiry information, which we could use
+          ;; for automatic caching -- check with iSHARE docs to see if
+          ;; that's always available
+          :ishare/lens          [:body "access_token"]))
+  ([request]
+   (access-token-request request nil)))
+
+;; Parties is a satellite endpoint; response will be signed by the
+;; satellite, and we cannot use `/parties` endpoint to validate the
+;; signature of the `/parties` request.
+
+(defn parties-request
+  [request params]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path          "parties"
+             :as           :json
+             :query-params  params
+             :ishare/unsign-token "parties_token"
+             ;; NOTE: pagination to be implemented
+             :ishare/lens   [:body "parties_token"])))
+
+(defn party-request
+  [request party-id]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path         (str "parties/" party-id)
+             :as           :json
+             :ishare/unsign-token "party_token"
+             :ishare/lens [:body "party_token"])))
+
+(defn trusted-list-request
+  [request]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path         "trusted_list"
+             :as           :json
+             :ishare/unsign-token "trusted_list_token"
+             :ishare/lens         [:body "trusted_list_token"])))
+
+(defn capabilities-request
+  [request]
+  (assoc request
+         :method       :get
+         :path         "capabilities"
+         :as           :json
+         :ishare/unsign-token "capabilities_token"
+         :ishare/lens         [:body "capabilities_token"]))
+
+(defn delegation-evidence-request
+  "Create a delegation evidence request.
+
+  Sets `:ishare/policy-issuer` key from the given `delegation-mask`,
+  for use by `ishare-issuer-ar-interceptor` -- which can locate the
+  correct Authorization Register for that issuer and
+  `:ishare/dataspace-id`."
+  [request {{:keys [policyIssuer]} :delegationRequest :as delegation-mask}]
+  {:pre [delegation-mask policyIssuer]}
+  (assoc request
+         :method               :post
+         :path                 "delegation"
+         :as                   :json
+         :json-params          delegation-mask
+         :ishare/policy-issuer policyIssuer
+         :ishare/unsign-token  "delegation_token"
+         :ishare/lens          [:body "delegation_token"]))
+
+(declare exec)
+
+
+
+;; We moved to named request functions since those are more
+;; ergonomic. They are more discoverable, can take additional
+;; arguments and can be indivually documented.
+;;
+;; The old ishare->http-request functions are now based on the new
+;; functions, and moved here for backward compatibility.
+
+(defmulti  ishare->http-request
+  "This method will be removed in a future version of the library.
+
+  Use named *-request functions instead.  See also `party-request`,
+  `access-token-request`."
+  :ishare/message-type)
+
+(defmethod ishare->http-request nil
+  ;; named request function called. leave the request alone
+  [request]
+  request)
+
+
+(defmethod ishare->http-request :access-token
+  [request]
+  (access-token-request request (:path request)))
+
+
+(defmethod ishare->http-request :parties
+  [request]
+  (parties-request request (:ishare/params request)))
+
+(defmethod ishare->http-request :party
+  [request]
+  (party-request request (:ishare/party-id request)))
+
+(defmethod ishare->http-request :trusted-list
+  [request]
+  (trusted-list-request request))
+
+(defmethod ishare->http-request :capabilities
+  [request]
+  (capabilities-request request))
+
+(defmethod ishare->http-request :delegation
+  [{{{:keys [policyIssuer]} :delegationRequest :as delegation-mask} :ishare/params :as request}]
+  (prn "delegation!")
+  (assert (= policyIssuer (:ishare/policy-issuer request)))
+  (prn "no err")
+  (delegation-evidence-request request delegation-mask))
+
+
+
+;; Interceptors
+
 (def unsign-token-interceptor
   {:name     ::unsign-token
    :description
@@ -92,8 +243,6 @@
                  (assoc-in request [:headers "Authorization"] (str "Bearer " bearer-token))
                  request))})
 
-(declare exec)
-
 (def fetch-bearer-token-interceptor
   {:name    ::fetch-bearer-token
    :doc     "When request has no :ishare/bearer-token, fetch it from the endpoint.
@@ -107,7 +256,7 @@ When bearer token is not needed, provide a `nil` token"
                                                  :ishare/server-id
                                                  :ishare/x5c
                                                  :ishare/private-key])
-                                   (assoc :ishare/message-type :access-token)
+                                   (access-token-request)
                                    exec)
                       token (:ishare/result response)]
                   (when-not token
@@ -263,17 +412,13 @@ When bearer token is not needed, provide a `nil` token"
   {:name    ::fetch-issuer-ar
    :request fetch-issuer-ar})
 
-
-
-(defmulti ishare->http-request
-  :ishare/message-type)
-
-(def ishare-interpreter-interactor
-  {:name ::ishare-interpretor-interactor
+(def ishare-interpreter-interceptor
+  {:name ::ishare-interpretor-interceptor
+   :doc  "This is a deprecated interceptor. Use named request functions instead."
    :request ishare->http-request})
 
 (def interceptors
-  [ishare-interpreter-interactor
+  [ishare-interpreter-interceptor
    fetch-issuer-ar-interceptor
    throw-on-exceptional-status-code
    log-interceptor
@@ -292,6 +437,11 @@ When bearer token is not needed, provide a `nil` token"
    ;; error messages are decoded
    interceptors/decode-body
    interceptors/decompress-body])
+
+
+
+
+;; Client / exec functions
 
 (def ^:dynamic http-client nil)
 
@@ -314,97 +464,17 @@ When bearer token is not needed, provide a `nil` token"
                        :interceptors interceptors
                        :timeout timeout-ms)))
 
-(defn satellite-request
-  [{:ishare/keys [satellite-base-url satellite-id] :as request}]
-  {:pre [satellite-base-url satellite-id]}
-  (assoc request
-         :ishare/base-url    satellite-base-url
-         :ishare/server-id   satellite-id))
+
 
 
 
-(defmethod ishare->http-request :access-token
-  [{:ishare/keys [client-id path] :as request}]
-  {:pre [client-id]}
-  (assoc request
-         :path          (or path "connect/token")
-         :method       :post
-         :as           :json
-         :ishare/bearer-token nil
-         :form-params  {"client_id"             client-id
-                        "grant_type"            "client_credentials"
-                        "scope"                 "iSHARE" ;; TODO: allow restricting scope?
-                        "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-                        "client_assertion"      (jwt/make-client-assertion request)}
-         ;; NOTE: body includes expiry information, which we could use
-         ;; for automatic caching -- check with iSHARE docs to see if
-         ;; that's always available
-         :ishare/lens          [:body "access_token"]))
 
-;; Parties is a satellite endpoint; response will be signed by the
-;; satellite, and we cannot use `/parties` endpoint to validate the
-;; signature of the `/parties` request.
-
-(defmethod ishare->http-request :parties
-  [{:ishare/keys [params] :as request}]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path          "parties"
-             :as           :json
-             :query-params  params
-             :ishare/unsign-token "parties_token"
-             ;; NOTE: pagination to be implemented
-             :ishare/lens   [:body "parties_token"])))
-
-(defmethod ishare->http-request :party
-  [{:ishare/keys [party-id] :as request}]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path         (str "parties/" party-id)
-             :as           :json
-             :ishare/unsign-token "party_token"
-             :ishare/lens [:body "party_token"])))
-
-(defmethod ishare->http-request :trusted-list
-  [request]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path         "trusted_list"
-             :as           :json
-             :ishare/unsign-token "trusted_list_token"
-             :ishare/lens         [:body "trusted_list_token"])))
-
-(defmethod ishare->http-request :capabilities
-  [request]
-  (assoc request
-         :method       :get
-         :path         "capabilities"
-         :as           :json
-         :ishare/unsign-token "capabilities_token"
-         :ishare/lens         [:body "capabilities_token"]))
-
-
-
-(defmethod ishare->http-request :delegation
-  [{delegation-mask :ishare/params :as request}]
-  (assoc request
-         :method               :post
-         :path                 "delegation"
-         :as                   :json
-         :json-params          delegation-mask
-         :ishare/unsign-token  "delegation_token"
-         :ishare/lens          [:body "delegation_token"]))
-
-
 
 (comment
   (def client-data
     {:ishare/client-id   "EU.EORI.NLSMARTPHON"
-     :ishare/x5c         (x5c "credentials/EU.EORI.NLSMARTPHON.crt")
-     :ishare/private-key (private-key "credentials/EU.EORI.NLSMARTPHON.pem")})
+     :ishare/x5c         (x5c "test/pem/client.cert.pem")
+     :ishare/private-key (private-key "test/pem/client.key.pem")})
 
   (def client-data
     {:ishare/client-id   "EU.EORI.NLFLEXTRANS"
