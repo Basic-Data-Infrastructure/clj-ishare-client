@@ -182,9 +182,7 @@
 
 (defmethod ishare->http-request :delegation
   [{{{:keys [policyIssuer]} :delegationRequest :as delegation-mask} :ishare/params :as request}]
-  (prn "delegation!")
   (assert (= policyIssuer (:ishare/policy-issuer request)))
-  (prn "no err")
   (delegation-evidence-request request delegation-mask))
 
 

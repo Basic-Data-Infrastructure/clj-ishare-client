@@ -9,7 +9,7 @@
   (:require [clojure.core.async :refer [<!! >!!] :as async]
             [clojure.data.json :as json]
             [clojure.string :as s]
-            [clojure.test :refer [deftest is testing]]
+            [clojure.test :refer [deftest is testing are]]
             [clojure.java.io :as io]
             [org.bdinetwork.ishare.client :as client]
             [org.bdinetwork.ishare.jwt :as jwt]
@@ -69,17 +69,21 @@
 
       (test-get-token c "aa-token")
 
-      (testing "getting parties"
+      (testing "Getting parties"
         (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str aa-url "/parties") (str uri)))
+          (is (= (str aa-url "/parties")
+                 (str uri) ;; is a java.net.URI
+                 ))
           (is (= "Bearer aa-token" (get-in req [:headers "Authorization"])))
 
           (>!! c {:status  200
-                  :uri     (:uri req)
+                  :uri     uri
                   :headers {"content-type" "application/json"}
                   :body    (json/json-str
                             {"parties_token"
                              (jwt/make-jwt {:iat 0
+                                            ;; Too old; will be rejected, since make-jwt
+                                            ;; will set exp to iat + 30 seconds.
                                             :iss aa-eori
                                             :sub aa-eori
                                             :aud client-eori}
@@ -87,7 +91,10 @@
                                            aa-x5c)})})))
 
       (let [{:keys [exception]} (<!! c)]
-        (is (s/starts-with? (.getMessage exception) "Token is expired")))
+        (is exception
+            "Exception raised")
+        (is (s/starts-with? (ex-message exception)
+                            "Token is expired")))
 
       (is (nil? @r))))
 
@@ -110,13 +117,21 @@
                                             :sub aa-eori
                                             :aud client-eori}
                                            aa-private-key
+                                           ;; we use `client-x5c`
+                                           ;; instead of `aa-x5c`, so
+                                           ;; the certificate chain
+                                           ;; does not match the
+                                           ;; private key.
+                                           ;;
+                                           ;; This should raise an
+                                           ;; exception in the client
                                            client-x5c)})})))
 
       (let [{:keys [exception]} (<!! c)]
         (is exception
-            "exception was raised")
+            "Exception raised")
         (is (= "Message seems corrupt or manipulated"
-               (.getMessage exception))))
+               (ex-message exception))))
 
       (is (nil? @r))))
 
@@ -138,102 +153,24 @@
                              (jwt/make-jwt {:iss          aa-eori
                                             :sub          aa-eori
                                             :aud          client-eori
-                                            :parties_info {:total_count 0, :pageCount 0, :count 0, :data []}}
+                                            :parties_info {:total_count 1,
+                                                           :pageCount 1,
+                                                           :count 1,
+                                                           :data [{:party_id "EU.EORI.CLIENT"
+                                                                   :adherence {:status "Active"}}]}}
                                            aa-private-key
                                            aa-x5c)})})))
 
-      (is (= 0 (-> @r :ishare/result :parties_info :count))))))
-
-(deftest parties-deprecated-api
-  (testing "expired parties token"
-    (let [[c r] (run-exec (-> client-data
-                              (assoc :ishare/message-type :parties)))]
-
-      (test-get-token c "aa-token")
-
-      (testing "getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str aa-url "/parties") (str uri)))
-          (is (= "Bearer aa-token" (get-in req [:headers "Authorization"])))
-
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iat 0
-                                            :iss aa-eori
-                                            :sub aa-eori
-                                            :aud client-eori}
-                                           aa-private-key
-                                           aa-x5c)})})))
-
-      (let [{:keys [exception]} (<!! c)]
-        (is (s/starts-with? (.getMessage exception) "Token is expired")))
-
-      (is (nil? @r))))
-
-  (testing "wrong certificate chain"
-    (let [[c r] (run-exec (-> client-data
-                              (assoc :ishare/message-type :parties)))]
-
-      (test-get-token c "aa-token")
-
-      (testing "getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str aa-url "/parties") (str uri)))
-          (is (= "Bearer aa-token" (get-in req [:headers "Authorization"])))
-
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iss aa-eori
-                                            :sub aa-eori
-                                            :aud client-eori}
-                                           aa-private-key
-                                           client-x5c)})})))
-
-      (let [{:keys [exception]} (<!! c)]
-        (is exception
-            "exception was raised")
-        (is (= "Message seems corrupt or manipulated"
-               (.getMessage exception))))
-
-      (is (nil? @r))))
-
-  (testing "valid parties token"
-    (let [[c r] (run-exec (-> client-data
-                              (assoc :ishare/message-type :parties)))]
-
-      (test-get-token c "aa-token")
-
-      (testing "getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str aa-url "/parties") (str uri)))
-          (is (= "Bearer aa-token" (-> req :headers (get "Authorization"))))
-
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iss          aa-eori
-                                            :sub          aa-eori
-                                            :aud          client-eori
-                                            :parties_info {:total_count 0, :pageCount 0, :count 0, :data []}}
-                                           aa-private-key
-                                           aa-x5c)})})))
-
-      (is (= 0 (-> @r :ishare/result :parties_info :count))))))
+      (is (= 1 (-> @r :ishare/result :parties_info :count))))))
 
 (deftest delegation
-  (testing "getting delegation evidence from an AR"
-    (let [[c r] (run-exec (client/delegation-evidence-request client-data {:delegationRequest {:policyIssuer client-eori}}))]
+  (testing "Getting delegation evidence from an AR"
+    (let [[c r] (run-exec (client/delegation-evidence-request client-data
+                                                              {:delegationRequest
+                                                               {:policyIssuer client-eori}}))]
       (test-get-token c "aa-token")
 
-      (testing "getting client"
+      (testing "Getting party info to retreive AR location"
         (let [{:keys [uri] :as req} (<!! c)]
           (is (= (str aa-url "/parties/" client-eori) (str uri)))
           (is (= "Bearer aa-token" (-> req :headers (get "Authorization"))))
@@ -258,9 +195,11 @@
                                            aa-private-key
                                            aa-x5c)})})))
 
-      (testing "get token at AR"
+      (testing "Get token at AR"
         (let [{:keys [uri]} (<!! c)]
-          (is (= (str ar-url "/connect/token") (str uri)))
+          (is (= (str ar-url "/connect/token")
+                 (str uri) ;; uri is a java.net.URI
+                 ))
 
           (>!! c {:status  200
                   :uri     uri
@@ -269,7 +208,7 @@
                                            "token_type"   "Bearer",
                                            "expires_in"   3600})})))
 
-      (testing "delegation call"
+      (testing "Get delegation evidence from AR"
         (let [{:keys [uri] :as req} (<!! c)]
           (is (= (str ar-url "/delegation") (str uri)))
           (is (= "Bearer ar-token" (get-in req [:headers "Authorization"])))
@@ -288,65 +227,51 @@
 
       (is (= "test" (-> @r :ishare/result :delegationEvidence))))))
 
-(deftest delegation-deprecated-api
-  (testing "getting delegation evidence from an AR"
-    (let [[c r] (run-exec (-> client-data
-                              (assoc :ishare/message-type :delegation
-                                     :ishare/policy-issuer client-eori
-                                     :ishare/params {:delegationRequest {:policyIssuer client-eori}})))]
-      (test-get-token c "aa-token")
+(def base-request
+  (assoc client-data
+         :ishare/base-url "https://example.com/api"
+         :ishare/server-id "EU.EORI.SERVERID"))
 
-      (testing "getting client"
-        (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str aa-url "/parties/" client-eori) (str uri)))
-          (is (= "Bearer aa-token" (-> req :headers (get "Authorization"))))
+(def delegation-request
+  {:delegationRequest {:policyIssuer client-eori}})
 
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"party_token"
-                             (jwt/make-jwt {:iss        aa-eori
-                                            :sub        aa-eori
-                                            :aud        client-eori
-                                            :party_info {:authregistery [{:dataspaceID              "other ds-id"
-                                                                          :authorizationRegistryID  "EU.EORI.OTHER"
-                                                                          :authorizationRegistryUrl "https://other.example.com"}
-                                                                         {:dataspaceID              dataspace-id
-                                                                          :authorizationRegistryID  ar-eori
-                                                                          :authorizationRegistryUrl ar-url}
-                                                                         {:dataspaceID              "random ds-id"
-                                                                          :authorizationRegistryID  "EU.EORI.RANDOM"
-                                                                          :authorizationRegistryUrl "https://random.example.com"}]}}
-                                           aa-private-key
-                                           aa-x5c)})})))
+(defn clean-request
+  [req]
+  (-> req
+      (dissoc :ishare/message-type
+              :ishare/params
+              :ishare/party-id)
+      (update :form-params dissoc "client_assertion")))
 
-      (testing "get token at AR"
-        (let [{:keys [uri]} (<!! c)]
-          (is (= (str ar-url "/connect/token") (str uri)))
+(deftest deprecated-api
+  (testing "Deprecated ishare->http-request middleware still works"
+    (are [new-api old-api] (= (clean-request new-api)
+                              (clean-request old-api))
 
-          (>!! c {:status  200
-                  :uri     uri
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str {"access_token" "ar-token"
-                                           "token_type"   "Bearer",
-                                           "expires_in"   3600})})))
+      (client/access-token-request base-request)
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :access-token))
 
-      (testing "delegation call"
-        (let [{:keys [uri] :as req} (<!! c)]
-          (is (= (str ar-url "/delegation") (str uri)))
-          (is (= "Bearer ar-token" (get-in req [:headers "Authorization"])))
+      (client/parties-request base-request {"name" "foo"})
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :parties
+                                          :ishare/params {"name" "foo"}))
 
-          (>!! c {:status  200
-                  :uri     uri
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"delegation_token"
-                             (jwt/make-jwt {:iss                ar-eori
-                                            :sub                ar-eori
-                                            :aud                client-eori
-                                            :delegationEvidence "test"}
-                                           ar-private-key
-                                           ar-x5c)})})))
+      (client/party-request base-request "foo")
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :party
+                                          :ishare/party-id "foo"))
 
-      (is (= "test" (-> @r :ishare/result :delegationEvidence))))))
+      (client/trusted-list-request base-request)
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :trusted-list))
+
+      (client/capabilities-request base-request)
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :capabilities))
+
+      (client/delegation-evidence-request base-request delegation-request)
+      (client/ishare->http-request (assoc base-request
+                                          :ishare/message-type :delegation
+                                          :ishare/policy-issuer client-eori
+                                          :ishare/params delegation-request)))))
