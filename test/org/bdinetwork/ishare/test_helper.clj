@@ -6,7 +6,7 @@
 ;;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (ns org.bdinetwork.ishare.test-helper
-  (:require [clojure.core.async :as async :refer [<!! >!!]]
+  (:require [clojure.core.async :as async :refer [>!! alt!!]]
             [org.bdinetwork.ishare.client :as ishare-client]))
 
 (defn build-client
@@ -18,7 +18,13 @@
   [c]
   (fn [request]
     (>!! c request)
-    (<!! c)))
+    (let [t (async/timeout 2000)]
+      (alt!! c ([response _] response)
+             t (throw
+                (ex-info (str "Timeout waiting for response for "
+                              (:method request) " "
+                              (:uri request))
+                         {:request request}))))))
 
 (defn run-exec
   "Run ishare client exec asynchronously returning a channel and a result future.
