@@ -12,7 +12,8 @@
             [buddy.core.keys :as keys]
             [clojure.string :as string]
             [org.bdinetwork.ishare.jwt :as jwt]
-            [clojure.tools.logging.readable :as log])
+            [clojure.tools.logging.readable :as log]
+            [clojure.core.memoize :as memoize])
   (:import (java.net URI)))
 
 (defn private-key
@@ -39,6 +40,155 @@
            (string/replace #"(?s)\s*-+END CERTIFICATE-+\s*\Z" "")
            (string/split #"(?s)\s*-+END CERTIFICATE-+.*?-+BEGIN CERTIFICATE-+\s*"))
        (mapv #(string/replace % #"\s+" ""))))
+
+
+
+
+;; named request functions
+
+(defn satellite-request
+  [{:ishare/keys [satellite-base-url satellite-id] :as request}]
+  {:pre [satellite-base-url satellite-id]}
+  (assoc request
+         :ishare/base-url    satellite-base-url
+         :ishare/server-id   satellite-id))
+
+(defn access-token-request
+  ([{:ishare/keys [client-id base-url server-id] :as request} path]
+   {:pre [client-id base-url server-id]}
+   (assoc request
+          :path          (or path "connect/token")
+          :method       :post
+          :as           :json
+          :ishare/bearer-token nil
+          :form-params  {"client_id"             client-id
+                         "grant_type"            "client_credentials"
+                         "scope"                 "iSHARE" ;; TODO: allow restricting scope?
+                         "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                         "client_assertion"      (jwt/make-client-assertion request)}
+          ;; NOTE: body includes expiry information, which we could use
+          ;; for automatic caching -- check with iSHARE docs to see if
+          ;; that's always available
+          :ishare/lens          [:body "access_token"]))
+  ([request]
+   (access-token-request request nil)))
+
+;; Parties is a satellite endpoint; response will be signed by the
+;; satellite, and we cannot use `/parties` endpoint to validate the
+;; signature of the `/parties` request.
+
+(defn parties-request
+  [request params]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path          "parties"
+             :as           :json
+             :query-params  params
+             :ishare/unsign-token "parties_token"
+             ;; NOTE: pagination to be implemented
+             :ishare/lens   [:body "parties_token"])))
+
+(defn party-request
+  [request party-id]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path         (str "parties/" party-id)
+             :as           :json
+             :ishare/unsign-token "party_token"
+             :ishare/lens [:body "party_token"])))
+
+(defn trusted-list-request
+  [request]
+  (-> request
+      (satellite-request)
+      (assoc :method       :get
+             :path         "trusted_list"
+             :as           :json
+             :ishare/unsign-token "trusted_list_token"
+             :ishare/lens         [:body "trusted_list_token"])))
+
+(defn capabilities-request
+  [request]
+  (assoc request
+         :method       :get
+         :path         "capabilities"
+         :as           :json
+         :ishare/unsign-token "capabilities_token"
+         :ishare/lens         [:body "capabilities_token"]))
+
+(defn delegation-evidence-request
+  "Create a delegation evidence request.
+
+  Sets `:ishare/policy-issuer` key from the given `delegation-mask`,
+  for use by `ishare-issuer-ar-interceptor` -- which can locate the
+  correct Authorization Register for that issuer and
+  `:ishare/dataspace-id`."
+  [request {{:keys [policyIssuer]} :delegationRequest :as delegation-mask}]
+  {:pre [delegation-mask policyIssuer]}
+  (assoc request
+         :method               :post
+         :path                 "delegation"
+         :as                   :json
+         :json-params          delegation-mask
+         :ishare/policy-issuer policyIssuer
+         :ishare/unsign-token  "delegation_token"
+         :ishare/lens          [:body "delegation_token"]))
+
+(declare exec)
+
+
+
+;; We moved to named request functions since those are more
+;; ergonomic. They are more discoverable, can take additional
+;; arguments and can be indivually documented.
+;;
+;; The old ishare->http-request functions are now based on the new
+;; functions, and moved here for backward compatibility.
+
+(defmulti  ishare->http-request
+  "This method will be removed in a future version of the library.
+
+  Use named *-request functions instead.  See also `party-request`,
+  `access-token-request`."
+  :ishare/message-type)
+
+(defmethod ishare->http-request nil
+  ;; named request function called. leave the request alone
+  [request]
+  request)
+
+
+(defmethod ishare->http-request :access-token
+  [request]
+  (access-token-request request (:path request)))
+
+
+(defmethod ishare->http-request :parties
+  [request]
+  (parties-request request (:ishare/params request)))
+
+(defmethod ishare->http-request :party
+  [request]
+  (party-request request (:ishare/party-id request)))
+
+(defmethod ishare->http-request :trusted-list
+  [request]
+  (trusted-list-request request))
+
+(defmethod ishare->http-request :capabilities
+  [request]
+  (capabilities-request request))
+
+(defmethod ishare->http-request :delegation
+  [{{{:keys [policyIssuer]} :delegationRequest :as delegation-mask} :ishare/params :as request}]
+  (assert (= policyIssuer (:ishare/policy-issuer request)))
+  (delegation-evidence-request request delegation-mask))
+
+
+
+;; Interceptors
 
 (def unsign-token-interceptor
   {:name     ::unsign-token
@@ -92,8 +242,6 @@
                  (assoc-in request [:headers "Authorization"] (str "Bearer " bearer-token))
                  request))})
 
-(declare exec)
-
 (def fetch-bearer-token-interceptor
   {:name    ::fetch-bearer-token
    :doc     "When request has no :ishare/bearer-token, fetch it from the endpoint.
@@ -102,19 +250,21 @@ When bearer token is not needed, provide a `nil` token"
               (if (contains? request :ishare/bearer-token)
                 request
                 (let [response (-> request
-                                   (select-keys [:ishare/base-url
-                                                 :ishare/client-id
-                                                 :ishare/server-id
-                                                 :ishare/x5c
-                                                 :ishare/private-key])
-                                   (assoc :ishare/message-type :access-token)
+                                   (select-keys  [:ishare/x5c
+                                                  :ishare/private-key
+                                                  :ishare/client-id
+                                                  :ishare/server-id
+                                                  :ishare/base-url
+                                                  :ishare/satellite-id
+                                                  :ishare/satellite-base-url
+                                                  :ishare/fetch-party-info-fn])
+                                   (access-token-request)
                                    exec)
-                      token (:ishare/result response)]
+                      token    (:ishare/result response)]
                   (when-not token
                     ;; FEEDBACK: bij invalid client op /token komt 202 status terug?
                     (throw (ex-info "Error fetching access token" {:response response})))
-                  (assoc request
-                         :ishare/bearer-token token))))})
+                  (assoc request :ishare/bearer-token token))))})
 
 (def lens-interceptor
   {:name     ::lens
@@ -226,6 +376,123 @@ When bearer token is not needed, provide a `nil` token"
               :url          authorizationRegistryUrl})
            authregistery)))
 
+(def instant-formatter
+  java.time.format.DateTimeFormatter/ISO_ZONED_DATE_TIME)
+
+(defn parse-instant
+  [s]
+  {:pre [s]}
+  (-> (java.time.ZonedDateTime/parse s instant-formatter)
+      (.toInstant)))
+
+(defn party-adherence-issue
+  "If party info is not currently adherent, returns an issue map
+  of :issue message and :info data."
+  [{{:keys [status start_date end_date]} :adherence
+    :keys                                [party_id] :as party-info}]
+  {:pre [party-info]}
+  (let [now (java.time.Instant/now)]
+    (cond
+      (not= "Active" status)
+      {:issue "Server party not active"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not start_date)
+      {:issue "No start_date"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not end_date)
+      {:issue "No end_date"
+       :info  {:status     status
+               :party_id   party_id
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not (.isBefore (parse-instant start_date) now))
+      {:issue "Server party not yet active"
+       :info  {:status     status
+               :party_id   party_id
+               :now        now
+               :start_date start_date
+               :end_date   end_date}}
+
+      (not (.isBefore  now (parse-instant end_date)))
+      {:issue "Server party not active anymore"
+       :info  {:status     status
+               :party_id   party_id
+               :now        now
+               :start_date start_date
+               :end_date   end_date}})))
+
+(defn fetch-party-info*
+  "Fetch party info from satellite.
+
+  Usually you'll want to use `fetch-party-info` instead."
+  [client-info party-id]
+  (-> (party-request client-info party-id)
+      exec
+      :ishare/result
+      :party_info))
+
+(defn mk-cached-fetch-party-info
+  "Create a cached version of `fetch-party-info*`"
+  [ttl-ms]
+  (memoize/ttl fetch-party-info* {} :ttl/threshold ttl-ms))
+
+(def ^{:doc "Cached version of `fetch-party-info*` with a one hour cache of results."
+       :arglists '([request party-id])}
+  fetch-party-info-default
+  (mk-cached-fetch-party-info 3600000))
+
+(defn fetch-party-info
+  "Request party info from satellite with optional cache.
+
+  Takes `:ishare/fetch-party-info-fn` from `request` to execute request. The
+  default value for this function is `fetch-party-info-default`, which
+  caches its result for one hour."
+  [{:ishare/keys [fetch-party-info-fn] :as request :or {fetch-party-info-fn fetch-party-info-default}}
+   party-id]
+  (fetch-party-info-fn (select-keys request [:ishare/x5c
+                                             :ishare/private-key
+                                             :ishare/client-id
+                                             :ishare/satellite-id
+                                             :ishare/satellite-base-url])
+                       party-id))
+
+(defn- check-server-adherence
+  "Fetch party for `:ishare/server-id` and raise an exception if the
+  party is not adherent.
+
+  Will always assume the server with `server-id` equal to
+  `satellite-id` is adherent."
+  [{:ishare/keys [server-id satellite-id]
+    :as          request}]
+  {:pre [satellite-id server-id]}
+  (when-not (= satellite-id server-id)
+    (if-let [party-info (fetch-party-info request server-id)]
+      (when-let [{:keys [issue info]} (party-adherence-issue party-info)]
+        (throw (ex-info issue info)))
+      (throw (ex-info "Party was not found" {:server-id    server-id
+                                             :satellite-id satellite-id})))))
+
+(def ishare-server-adherence-interceptor
+  {:name ::ishare-server-status-interceptor
+   :doc "Before accessing a server, check that it is still adherent.
+
+   If request has the `false` value for
+   `:ishare/check-server-adherence?`, this check will be skipped."
+   :request (fn [{:ishare/keys [check-server-adherence?] :as request}]
+              (when-not (false? check-server-adherence?)
+                (check-server-adherence request))
+              (assoc request
+                     :ishare/check-server-adherence? false))})
+
 (defn- fetch-issuer-ar
   "If request contains `policy-issuer` and no `server-id` + `base-url`,
   set `server-id` and `base-url` to issuer's authorization registry
@@ -236,18 +503,7 @@ When bearer token is not needed, provide a `nil` token"
           (and server-id base-url))
     request
     (if-let [{:keys [name id url]}
-             (->> (-> request
-                      ;; select only necessary from original request.
-                      (select-keys [:ishare/x5c
-                                    :ishare/private-key
-                                    :ishare/client-id
-                                    :ishare/satellite-id
-                                    :ishare/satellite-base-url])
-                      (assoc :ishare/message-type :party
-                             :ishare/party-id policy-issuer))
-                  exec
-                  :ishare/result
-                  :party_info
+             (->> (fetch-party-info request policy-issuer)
                   (party-info->auth-registry)
                   (filter #(= dataspace-id (:dataspace_id %)))
                   first)]
@@ -263,18 +519,15 @@ When bearer token is not needed, provide a `nil` token"
   {:name    ::fetch-issuer-ar
    :request fetch-issuer-ar})
 
-
-
-(defmulti ishare->http-request
-  :ishare/message-type)
-
-(def ishare-interpreter-interactor
-  {:name ::ishare-interpretor-interactor
+(def ishare-interpreter-interceptor
+  {:name ::ishare-interpretor-interceptor
+   :doc  "This is a deprecated interceptor. Use named request functions instead."
    :request ishare->http-request})
 
 (def interceptors
-  [ishare-interpreter-interactor
+  [ishare-interpreter-interceptor
    fetch-issuer-ar-interceptor
+   ishare-server-adherence-interceptor
    throw-on-exceptional-status-code
    log-interceptor
    logging-interceptor
@@ -292,6 +545,10 @@ When bearer token is not needed, provide a `nil` token"
    ;; error messages are decoded
    interceptors/decode-body
    interceptors/decompress-body])
+
+
+
+;; Client / exec functions
 
 (def ^:dynamic http-client nil)
 
@@ -314,97 +571,13 @@ When bearer token is not needed, provide a `nil` token"
                        :interceptors interceptors
                        :timeout timeout-ms)))
 
-(defn satellite-request
-  [{:ishare/keys [satellite-base-url satellite-id] :as request}]
-  {:pre [satellite-base-url satellite-id]}
-  (assoc request
-         :ishare/base-url    satellite-base-url
-         :ishare/server-id   satellite-id))
-
-
-
-(defmethod ishare->http-request :access-token
-  [{:ishare/keys [client-id path] :as request}]
-  {:pre [client-id]}
-  (assoc request
-         :path          (or path "connect/token")
-         :method       :post
-         :as           :json
-         :ishare/bearer-token nil
-         :form-params  {"client_id"             client-id
-                        "grant_type"            "client_credentials"
-                        "scope"                 "iSHARE" ;; TODO: allow restricting scope?
-                        "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-                        "client_assertion"      (jwt/make-client-assertion request)}
-         ;; NOTE: body includes expiry information, which we could use
-         ;; for automatic caching -- check with iSHARE docs to see if
-         ;; that's always available
-         :ishare/lens          [:body "access_token"]))
-
-;; Parties is a satellite endpoint; response will be signed by the
-;; satellite, and we cannot use `/parties` endpoint to validate the
-;; signature of the `/parties` request.
-
-(defmethod ishare->http-request :parties
-  [{:ishare/keys [params] :as request}]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path          "parties"
-             :as           :json
-             :query-params  params
-             :ishare/unsign-token "parties_token"
-             ;; NOTE: pagination to be implemented
-             :ishare/lens   [:body "parties_token"])))
-
-(defmethod ishare->http-request :party
-  [{:ishare/keys [party-id] :as request}]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path         (str "parties/" party-id)
-             :as           :json
-             :ishare/unsign-token "party_token"
-             :ishare/lens [:body "party_token"])))
-
-(defmethod ishare->http-request :trusted-list
-  [request]
-  (-> request
-      (satellite-request)
-      (assoc :method       :get
-             :path         "trusted_list"
-             :as           :json
-             :ishare/unsign-token "trusted_list_token"
-             :ishare/lens         [:body "trusted_list_token"])))
-
-(defmethod ishare->http-request :capabilities
-  [request]
-  (assoc request
-         :method       :get
-         :path         "capabilities"
-         :as           :json
-         :ishare/unsign-token "capabilities_token"
-         :ishare/lens         [:body "capabilities_token"]))
-
-
-
-(defmethod ishare->http-request :delegation
-  [{delegation-mask :ishare/params :as request}]
-  (assoc request
-         :method               :post
-         :path                 "delegation"
-         :as                   :json
-         :json-params          delegation-mask
-         :ishare/unsign-token  "delegation_token"
-         :ishare/lens          [:body "delegation_token"]))
-
 
 
 (comment
   (def client-data
     {:ishare/client-id   "EU.EORI.NLSMARTPHON"
-     :ishare/x5c         (x5c "credentials/EU.EORI.NLSMARTPHON.crt")
-     :ishare/private-key (private-key "credentials/EU.EORI.NLSMARTPHON.pem")})
+     :ishare/x5c         (x5c "test/pem/client.cert.pem")
+     :ishare/private-key (private-key "test/pem/client.key.pem")})
 
   (def client-data
     {:ishare/client-id   "EU.EORI.NLFLEXTRANS"
