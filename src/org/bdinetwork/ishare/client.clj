@@ -256,14 +256,15 @@ When bearer token is not needed, provide a `nil` token"
                                                   :ishare/server-id
                                                   :ishare/base-url
                                                   :ishare/satellite-id
-                                                  :ishare/satellite-base-url])
+                                                  :ishare/satellite-base-url
+                                                  :ishare/fetch-party-info-fn])
                                    (access-token-request)
                                    exec)
                       token    (:ishare/result response)]
                   (when-not token
                     ;; FEEDBACK: bij invalid client op /token komt 202 status terug?
                     (throw (ex-info "Error fetching access token" {:response response})))
-                  (assoc request                         :ishare/bearer-token token))))})
+                  (assoc request :ishare/bearer-token token))))})
 
 (def lens-interceptor
   {:name     ::lens
@@ -422,55 +423,51 @@ When bearer token is not needed, provide a `nil` token"
                :end_date   end_date}}
 
       (not (.isBefore  now (parse-instant end_date)))
-      {:issue "Server party not yet active"
+      {:issue "Server party not active anymore"
        :info  {:status     status
                :party_id   party_id
                :now        now
                :start_date start_date
                :end_date   end_date}})))
 
-(defn- fetch-party-info-uncached
+(defn fetch-party-info*
+  "Fetch party info from satellite.
 
-  [request party-id]
-  (-> request
-      (select-keys [:ishare/x5c
-                    :ishare/private-key
-                    :ishare/client-id
-                    :ishare/satellite-id
-                    :ishare/satellite-base-url])
-      (party-request party-id)
+  Usually you'll want to use `fetch-party-info` instead."
+  [client-info party-id]
+  (-> (party-request client-info party-id)
       exec
       :ishare/result
       :party_info))
 
-(defn mk-party-info-cached
+(defn mk-cached-fetch-party-info
+  "Create a cached version of `fetch-party-info*`"
   [ttl-ms]
-  (memoize/ttl (with-meta fetch-party-info-uncached
-                  ;; ignore irrelevant data in request when caching
-                 {::memoize/args-fn (fn [[req party-id]]
-                                      (prn [:args-fn (select-keys req [
-                                                         :ishare/client-id
-                                                         :ishare/satellite-id
-                                                         :ishare/satellite-base-url])])
-                                      [(select-keys req [:ishare/x5c
-                                                         :ishare/private-key
-                                                         :ishare/client-id
-                                                         :ishare/satellite-id
-                                                         :ishare/satellite-base-url])
-                                       party-id])})
-               {}
-               :ttl/threshold ttl-ms))
+  (memoize/ttl fetch-party-info* {} :ttl/threshold ttl-ms))
 
-(def ^:dynamic *party-info-fn*
-  (mk-party-info-cached 3600000))
+(def ^{:doc "Cached version of `fetch-party-info*` with a one hour cache of results."
+       :arglists '([request party-id])}
+  fetch-party-info-default
+  (mk-cached-fetch-party-info 3600000))
 
 (defn fetch-party-info
-  [request party-id]
-  (*party-info-fn* request party-id))
+  "Request party info from satellite with optional cache.
+
+  Takes `:ishare/fetch-party-info-fn` from `request` to execute request. The
+  default value for this function is `fetch-party-info-default`, which
+  caches its result for one hour."
+  [{:ishare/keys [fetch-party-info-fn] :as request :or {fetch-party-info-fn fetch-party-info-default}}
+   party-id]
+  (fetch-party-info-fn (select-keys request [:ishare/x5c
+                                             :ishare/private-key
+                                             :ishare/client-id
+                                             :ishare/satellite-id
+                                             :ishare/satellite-base-url])
+                       party-id))
 
 (defn- check-server-adherence
   "Fetch party for `:ishare/server-id` and raise an exception if the
-  party is not (yet) adherent.
+  party is not adherent.
 
   Will always assume the server with `server-id` equal to
   `satellite-id` is adherent."
@@ -488,7 +485,7 @@ When bearer token is not needed, provide a `nil` token"
   {:name ::ishare-server-status-interceptor
    :doc "Before accessing a server, check that it is still adherent.
 
-   If request has a `false` value for
+   If request has the `false` value for
    `:ishare/check-server-adherence?`, this check will be skipped."
    :request (fn [{:ishare/keys [check-server-adherence?] :as request}]
               (when-not (false? check-server-adherence?)

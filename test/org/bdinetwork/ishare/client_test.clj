@@ -6,14 +6,13 @@
 ;;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (ns org.bdinetwork.ishare.client-test
-  (:require [clojure.core.async :refer [<!! >!!] :as async]
-            [clojure.data.json :as json]
+  (:require [clojure.data.json :as json]
             [clojure.string :as s]
             [clojure.test :refer [deftest is testing are]]
             [clojure.java.io :as io]
             [org.bdinetwork.ishare.client :as client]
             [org.bdinetwork.ishare.jwt :as jwt]
-            [org.bdinetwork.ishare.test-helper :refer [run-exec]]))
+            [org.bdinetwork.ishare.test-helper :refer [run-exec take-request! put-response!]]))
 
 (defn- ->x5c [v]
   (->> [v "ca"]
@@ -49,7 +48,7 @@
 
 (defn test-get-token [c base-url token]
   (testing (str "Getting an access token for " base-url)
-    (let [{:keys [uri exception]} (<!! c)]
+    (let [{:keys [uri exception]} (take-request! c)]
       (when exception
         (throw (ex-info "Unexpected exception during access-token call"
                         {:token token}
@@ -57,12 +56,12 @@
       (is (= (str base-url "/connect/token") (str uri))
           "Correct url for access token")
 
-      (>!! c {:status  200
-              :uri     uri
-              :headers {"content-type" "application/json"}
-              :body    (json/json-str {"access_token" token
-                                       "token_type"   "Bearer",
-                                       "expires_in"   3600})}))))
+      (put-response! c {:status  200
+                        :uri     uri
+                        :headers {"content-type" "application/json"}
+                        :body    (json/json-str {"access_token" token
+                                                 "token_type"   "Bearer",
+                                                 "expires_in"   3600})}))))
 
 (deftest parties
   (testing "expired parties token"
@@ -71,27 +70,27 @@
       (test-get-token c satellite-url "satellite-token")
 
       (testing "Getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
+        (let [{:keys [uri] :as req} (take-request! c)]
           (is (= (str satellite-url "/parties")
                  (str uri) ;; is a java.net.URI
                  ))
           (is (= "Bearer satellite-token" (get-in req [:headers "Authorization"])))
 
-          (>!! c {:status  200
-                  :uri     uri
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iat 0
-                                            ;; Too old; will be rejected, since make-jwt
-                                            ;; will set exp to iat + 30 seconds.
-                                            :iss satellite-eori
-                                            :sub satellite-eori
-                                            :aud client-eori}
-                                           satellite-private-key
-                                           satellite-x5c)})})))
+          (put-response! c {:status  200
+                            :uri     uri
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"parties_token"
+                                       (jwt/make-jwt {:iat 0
+                                                      ;; Too old; will be rejected, since make-jwt
+                                                      ;; will set exp to iat + 30 seconds.
+                                                      :iss satellite-eori
+                                                      :sub satellite-eori
+                                                      :aud client-eori}
+                                                     satellite-private-key
+                                                     satellite-x5c)})})))
 
-      (let [{:keys [exception]} (<!! c)]
+      (let [{:keys [exception]} (take-request! c)]
         (is exception
             "Exception raised")
         (is (s/starts-with? (ex-message exception)
@@ -105,30 +104,30 @@
       (test-get-token c satellite-url "satellite-token")
 
       (testing "getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
+        (let [{:keys [uri] :as req} (take-request! c)]
           (is (= (str satellite-url "/parties?active_only=true") (str uri)))
           (is (= "Bearer satellite-token" (get-in req [:headers "Authorization"])))
 
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iss satellite-eori
-                                            :sub satellite-eori
-                                            :aud client-eori}
-                                           satellite-private-key
-                                           ;; we use `client-x5c`
-                                           ;; instead of `satellite-x5c`, so
-                                           ;; the certificate chain
-                                           ;; does not match the
-                                           ;; private key.
-                                           ;;
-                                           ;; This should raise an
-                                           ;; exception in the client
-                                           client-x5c)})})))
+          (put-response! c {:status  200
+                            :uri     (:uri req)
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"parties_token"
+                                       (jwt/make-jwt {:iss satellite-eori
+                                                      :sub satellite-eori
+                                                      :aud client-eori}
+                                                     satellite-private-key
+                                                     ;; we use `client-x5c`
+                                                     ;; instead of `satellite-x5c`, so
+                                                     ;; the certificate chain
+                                                     ;; does not match the
+                                                     ;; private key.
+                                                     ;;
+                                                     ;; This should raise an
+                                                     ;; exception in the client
+                                                     client-x5c)})})))
 
-      (let [{:keys [exception]} (<!! c)]
+      (let [{:keys [exception]} (take-request! c)]
         (is exception
             "Exception raised")
         (is (= "Message seems corrupt or manipulated"
@@ -142,105 +141,106 @@
       (test-get-token c satellite-url "satellite-token")
 
       (testing "getting parties"
-        (let [{:keys [uri] :as req} (<!! c)]
+        (let [{:keys [uri] :as req} (take-request! c)]
           (is (= (str satellite-url "/parties?name=Party+Name") (str uri)))
           (is (= "Bearer satellite-token" (-> req :headers (get "Authorization"))))
 
-          (>!! c {:status  200
-                  :uri     (:uri req)
-                  :headers {"content-type" "application/json"}
-                  :body    (json/json-str
-                            {"parties_token"
-                             (jwt/make-jwt {:iss          satellite-eori
-                                            :sub          satellite-eori
-                                            :aud          client-eori
-                                            :parties_info {:total_count 1,
-                                                           :pageCount   1,
-                                                           :count       1,
-                                                           :data        [{:party_id  "EU.EORI.CLIENT"
-                                                                          :adherence {:status     "Active"
-                                                                                      :start_date "2024-10-01T07:40:25.597636Z"
-                                                                                      :end_date   "2124-10-01T07:40:25.597636Z"}}]}}
-                                           satellite-private-key
-                                           satellite-x5c)})})))
+          (put-response! c {:status  200
+                            :uri     (:uri req)
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"parties_token"
+                                       (jwt/make-jwt {:iss          satellite-eori
+                                                      :sub          satellite-eori
+                                                      :aud          client-eori
+                                                      :parties_info {:total_count 1,
+                                                                     :pageCount   1,
+                                                                     :count       1,
+                                                                     :data        [{:party_id  "EU.EORI.CLIENT"
+                                                                                    :adherence {:status     "Active"
+                                                                                                :start_date "2024-10-01T07:40:25.597636Z"
+                                                                                                :end_date   "2124-10-01T07:40:25.597636Z"}}]}}
+                                                     satellite-private-key
+                                                     satellite-x5c)})})))
 
       (is (= 1 (-> @r :ishare/result :parties_info :count))))))
 
 (deftest delegation
   (testing "Delegation evidence request"
-    ;; use fresh party-info-cache for repeatable tests
-    (binding [client/*party-info-fn* (client/mk-party-info-cached 60000)]
-      (let [[c r] (run-exec (client/delegation-evidence-request client-data
-                                                                {:delegationRequest
-                                                                 {:policyIssuer client-eori}}))]
+
+    (let [[c r] (run-exec (client/delegation-evidence-request (assoc client-data
+                                                                     ;; use fresh cached fetch-party-info-fn for repeatable tests
+                                                                     :ishare/fetch-party-info-fn (client/mk-cached-fetch-party-info 60000))
+                                                              {:delegationRequest
+                                                               {:policyIssuer client-eori}}))]
+      (test-get-token c satellite-url "satellite-token")
+
+      (testing "Getting party info to retreive AR location"
+        (let [{:keys [uri] :as req} (take-request! c)]
+          (is (= (str satellite-url "/parties/" client-eori) (str uri)))
+          (is (= "Bearer satellite-token" (-> req :headers (get "Authorization"))))
+
+          (put-response! c {:status  200
+                            :uri     (:uri req)
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"party_token"
+                                       (jwt/make-jwt {:iss        satellite-eori
+                                                      :sub        satellite-eori
+                                                      :aud        client-eori
+                                                      :party_info {:authregistery [{:dataspaceID              "other ds-id"
+                                                                                    :authorizationRegistryID  "EU.EORI.OTHER"
+                                                                                    :authorizationRegistryUrl "https://other.example.com"}
+                                                                                   {:dataspaceID              dataspace-id
+                                                                                    :authorizationRegistryID  ar-eori
+                                                                                    :authorizationRegistryUrl ar-url}
+                                                                                   {:dataspaceID              "random ds-id"
+                                                                                    :authorizationRegistryID  "EU.EORI.RANDOM"
+                                                                                    :authorizationRegistryUrl "https://random.example.com"}]}}
+                                                     satellite-private-key
+                                                     satellite-x5c)})})))
+
+      (testing "Get AR provider's party info"
         (test-get-token c satellite-url "satellite-token")
 
-        (testing "Getting party info to retreive AR location"
-          (let [{:keys [uri] :as req} (<!! c)]
-            (is (= (str satellite-url "/parties/" client-eori) (str uri)))
-            (is (= "Bearer satellite-token" (-> req :headers (get "Authorization"))))
+        (let [{:keys [uri] :as req} (take-request! c)]
+          (is (= (str satellite-url "/parties/" ar-eori) (str uri)))
+          (is (= "Bearer satellite-token" (-> req :headers (get "Authorization"))))
 
-            (>!! c {:status  200
-                    :uri     (:uri req)
-                    :headers {"content-type" "application/json"}
-                    :body    (json/json-str
-                              {"party_token"
-                               (jwt/make-jwt {:iss        satellite-eori
-                                              :sub        satellite-eori
-                                              :aud        client-eori
-                                              :party_info {:authregistery [{:dataspaceID              "other ds-id"
-                                                                            :authorizationRegistryID  "EU.EORI.OTHER"
-                                                                            :authorizationRegistryUrl "https://other.example.com"}
-                                                                           {:dataspaceID              dataspace-id
-                                                                            :authorizationRegistryID  ar-eori
-                                                                            :authorizationRegistryUrl ar-url}
-                                                                           {:dataspaceID              "random ds-id"
-                                                                            :authorizationRegistryID  "EU.EORI.RANDOM"
-                                                                            :authorizationRegistryUrl "https://random.example.com"}]}}
-                                             satellite-private-key
-                                             satellite-x5c)})})))
+          (put-response! c {:status  200
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"party_token"
+                                       (jwt/make-jwt {:iss        satellite-eori
+                                                      :sub        satellite-eori
+                                                      :aud        client-eori
+                                                      :party_info {
+                                                                   :adherence {:status     "Active"
+                                                                               :start_date "2024-10-01T07:40:25.597636Z"
+                                                                               :end_date   "2124-10-01T07:40:25.597636Z"}}}
+                                                     satellite-private-key
+                                                     satellite-x5c)})})))
 
-        (testing "Get AR provider's party info"
-          (test-get-token c satellite-url "satellite-token")
+      (testing "Get delegation evidence from AR"
+        (test-get-token c ar-url "ar-token")
 
-          (let [{:keys [uri] :as req} (<!! c)]
-            (is (= (str satellite-url "/parties/" ar-eori) (str uri)))
-            (is (= "Bearer satellite-token" (-> req :headers (get "Authorization"))))
+        (let [{:keys [uri] :as req} (take-request! c)]
+          (is (= (str ar-url "/delegation") (str uri)))
+          (is (= "Bearer ar-token" (get-in req [:headers "Authorization"])))
 
-            (>!! c {:status  200
-                    :headers {"content-type" "application/json"}
-                    :body    (json/json-str
-                              {"party_token"
-                               (jwt/make-jwt {:iss        satellite-eori
-                                              :sub        satellite-eori
-                                              :aud        client-eori
-                                              :party_info {
-                                                           :adherence {:status     "Active"
-                                                                       :start_date "2024-10-01T07:40:25.597636Z"
-                                                                       :end_date   "2124-10-01T07:40:25.597636Z"}}}
-                                             satellite-private-key
-                                             satellite-x5c)})})))
+          (put-response! c {:status  200
+                            :uri     uri
+                            :headers {"content-type" "application/json"}
+                            :body    (json/json-str
+                                      {"delegation_token"
+                                       (jwt/make-jwt {:iss                ar-eori
+                                                      :sub                ar-eori
+                                                      :aud                client-eori
+                                                      :delegationEvidence "test"}
+                                                     ar-private-key
+                                                     ar-x5c)})})))
 
-        (testing "Get delegation evidence from AR"
-          (test-get-token c ar-url "ar-token")
-
-          (let [{:keys [uri] :as req} (<!! c)]
-            (is (= (str ar-url "/delegation") (str uri)))
-            (is (= "Bearer ar-token" (get-in req [:headers "Authorization"])))
-
-            (>!! c {:status  200
-                    :uri     uri
-                    :headers {"content-type" "application/json"}
-                    :body    (json/json-str
-                              {"delegation_token"
-                               (jwt/make-jwt {:iss                ar-eori
-                                              :sub                ar-eori
-                                              :aud                client-eori
-                                              :delegationEvidence "test"}
-                                             ar-private-key
-                                             ar-x5c)})})))
-
-        (is (= "test" (-> @r :ishare/result :delegationEvidence)))))))
+      (is (= "test" (-> @r :ishare/result :delegationEvidence))))))
 
 (def base-request
   (assoc client-data

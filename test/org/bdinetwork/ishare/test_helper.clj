@@ -6,8 +6,35 @@
 ;;; SPDX-License-Identifier: AGPL-3.0-or-later
 
 (ns org.bdinetwork.ishare.test-helper
-  (:require [clojure.core.async :as async :refer [>!! alt!!]]
+  (:require [clojure.core.async :as async :refer [alt!!]]
             [org.bdinetwork.ishare.client :as ishare-client]))
+
+(defn <!!-timeout
+  ([c description info]
+   (let [t (async/timeout 2000)]
+     (alt!! c ([x _] x)
+            t (throw
+               (ex-info (str "Timeout " description)
+                        info)))))
+  ([c description]
+   (<!!-timeout c description {})))
+
+(defn take-request!
+  ([c msg]
+   (<!!-timeout c msg))
+  ([c]
+   (take-request! c "taking request")))
+
+(defn >!!-timeout
+  [c x description]
+  (let [t (async/timeout 2000)]
+    (alt!! [[c x]] true
+           t (throw (ex-info (str "Timeout " description)
+                             x)))))
+
+(defn put-response!
+  [c response]
+  (>!!-timeout c response "putting response"))
 
 (defn build-client
   "Create a client useable with babashka.http-client/request.
@@ -17,14 +44,8 @@
   response on the same channel."
   [c]
   (fn [request]
-    (>!! c request)
-    (let [t (async/timeout 2000)]
-      (alt!! c ([response _] response)
-             t (throw
-                (ex-info (str "Timeout waiting for response for "
-                              (:method request) " "
-                              (:uri request))
-                         {:request request}))))))
+    (>!!-timeout c request "putting request")
+    (<!!-timeout c "taking response" {:request request})))
 
 (defn run-exec
   "Run ishare client exec asynchronously returning a channel and a result future.
@@ -40,5 +61,5 @@
                (async/close! c)
                res)
              (catch Throwable e
-               (>!! c {:exception e})
+               (>!!-timeout c {:exception e} "Exception")
                (async/close! c)))))]))
