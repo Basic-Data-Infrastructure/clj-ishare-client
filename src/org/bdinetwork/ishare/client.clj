@@ -54,18 +54,25 @@
          :ishare/server-id   satellite-id))
 
 (defn access-token-request
+  "Create a request for an access token.
+
+  Takes a base `request` that should include client info. Builds a
+  client assertion for `client-id` to authenticate to `server-id`.
+
+  The request `:ishare/operation` is `:access-token`."
   ([{:ishare/keys [client-id base-url server-id] :as request} path]
    {:pre [client-id base-url server-id]}
    (assoc request
-          :path          (or path "connect/token")
-          :method       :post
-          :as           :json
+          :ishare/operation    :access-token
+          :path                (or path "connect/token")
+          :method              :post
+          :as                  :json
           :ishare/bearer-token nil
-          :form-params  {"client_id"             client-id
-                         "grant_type"            "client_credentials"
-                         "scope"                 "iSHARE" ;; TODO: allow restricting scope?
-                         "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
-                         "client_assertion"      (jwt/make-client-assertion request)}
+          :form-params         {"client_id"             client-id
+                                "grant_type"            "client_credentials"
+                                "scope"                 "iSHARE" ;; TODO: allow restricting scope?
+                                "client_assertion_type" "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                                "client_assertion"      (jwt/make-client-assertion request)}
           ;; NOTE: body includes expiry information, which we could use
           ;; for automatic caching -- check with iSHARE docs to see if
           ;; that's always available
@@ -78,43 +85,59 @@
 ;; signature of the `/parties` request.
 
 (defn parties-request
+  "Create a `satellite-request` for parties info.
+
+  Takes a base `request` and passes `params` as query params."
   [request params]
   (-> request
       (satellite-request)
-      (assoc :method       :get
-             :path          "parties"
-             :as           :json
-             :query-params  params
+      (assoc :ishare/operation    :parties
+             :method              :get
+             :path                "parties"
+             :as                  :json
+             :query-params        params
              :ishare/unsign-token "parties_token"
-             ;; NOTE: pagination to be implemented
-             :ishare/lens   [:body "parties_token"])))
+             :ishare/lens         [:body "parties_token"])))
 
 (defn party-request
+  "Create a `satellite-request` for party info for a single party.
+
+  Takes a base `request` and `party-id` of the party info to be
+  returned."
   [request party-id]
   (-> request
       (satellite-request)
-      (assoc :method       :get
-             :path         (str "parties/" party-id)
-             :as           :json
+      (assoc :ishare/operation    :party
+             :method              :get
+             :path                (str "parties/" party-id)
+             :as                  :json
              :ishare/unsign-token "party_token"
-             :ishare/lens [:body "party_token"])))
+             :ishare/lens         [:body "party_token"])))
 
 (defn trusted-list-request
+  "Create a `satellite-request` for the trusted list of CAs.
+
+  Takes a base `request`"
   [request]
   (-> request
       (satellite-request)
-      (assoc :method       :get
-             :path         "trusted_list"
-             :as           :json
+      (assoc :ishare/operation    :trusted-list
+             :method              :get
+             :path                "trusted_list"
+             :as                  :json
              :ishare/unsign-token "trusted_list_token"
              :ishare/lens         [:body "trusted_list_token"])))
 
 (defn capabilities-request
+  "Create a request for the capabilities of the server.
+
+  Takes a base `request`."
   [request]
   (assoc request
-         :method       :get
-         :path         "capabilities"
-         :as           :json
+         :ishare/operation    :capabilities
+         :method              :get
+         :path                "capabilities"
+         :as                  :json
          :ishare/unsign-token "capabilities_token"
          :ishare/lens         [:body "capabilities_token"]))
 
@@ -128,6 +151,7 @@
   [request {{:keys [policyIssuer]} :delegationRequest :as delegation-mask}]
   {:pre [delegation-mask policyIssuer]}
   (assoc request
+         :ishare/operation     :delegation-evidence
          :method               :post
          :path                 "delegation"
          :as                   :json
@@ -159,11 +183,9 @@
   [request]
   request)
 
-
 (defmethod ishare->http-request :access-token
   [request]
   (access-token-request request (:path request)))
-
 
 (defmethod ishare->http-request :parties
   [request]
@@ -470,14 +492,24 @@ When bearer token is not needed, provide a `nil` token"
   party is not adherent.
 
   Will always assume the server with `server-id` equal to
-  `satellite-id` is adherent."
+  `satellite-id` is adherent.
+
+  Returns an updated `request` if the server is adherent:
+  - adds `:ishare/server-name` from party info if not already present
+  - adds `:ishare/server-adherent?` `true`"
   [{:ishare/keys [server-id satellite-id]
     :as          request}]
   {:pre [satellite-id server-id]}
-  (when-not (= satellite-id server-id)
-    (if-let [party-info (fetch-party-info request server-id)]
-      (when-let [{:keys [issue info]} (party-adherence-issue party-info)]
-        (throw (ex-info issue info)))
+  (if (= satellite-id server-id)
+    (assoc request
+           :ishare/server-name "Association Register"
+           :ishare/server-adherent? true)
+    (if-let [{:keys [party_name] :as party-info} (fetch-party-info request server-id)]
+      (if-let [{:keys [issue info]} (party-adherence-issue party-info)]
+        (throw (ex-info issue info))
+        (assoc request
+               :ishare/server-name party_name
+               :ishare/server-adherent? true))
       (throw (ex-info "Party was not found" {:server-id    server-id
                                              :satellite-id satellite-id})))))
 
@@ -485,13 +517,15 @@ When bearer token is not needed, provide a `nil` token"
   {:name ::ishare-server-status-interceptor
    :doc "Before accessing a server, check that it is still adherent.
 
+   If request has the `true` value for `:ishare/server-adherent?` the
+   sever is assumed to be adherent and the check is skipped.
+
    If request has the `false` value for
-   `:ishare/check-server-adherence?`, this check will be skipped."
-   :request (fn [{:ishare/keys [check-server-adherence?] :as request}]
-              (when-not (false? check-server-adherence?)
-                (check-server-adherence request))
-              (assoc request
-                     :ishare/check-server-adherence? false))})
+   `:ishare/check-server-adherence?`, the check is skipped."
+   :request (fn [{:ishare/keys [server-adherent? check-server-adherence?] :as request}]
+              (if (or server-adherent? (false? check-server-adherence?))
+                request
+                (check-server-adherence request)))})
 
 (defn- fetch-issuer-ar
   "If request contains `policy-issuer` and no `server-id` + `base-url`,
