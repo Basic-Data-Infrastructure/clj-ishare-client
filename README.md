@@ -9,12 +9,11 @@ SPDX-License-Identifier: AGPL-3.0-or-later
 
 # Clojure iSHARE client
 
-## ⚠ DISCLAIMER ⚠
-
-**The software is for demo purposes only!**  It has not been audited
-for security flaws and is not suitable as a starting point to develop
-software.  Use at your own risk.
-
+> [!WARNING]
+> This is an archived repository and no longer maintained.
+>
+> The latest version of this code is now part of the [BDI Stack
+> repository](https://github.com/Basic-Data-Infrastructure/bdi-stack).
 
 ## Copying
 
